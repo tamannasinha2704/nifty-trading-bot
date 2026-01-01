@@ -37,7 +37,7 @@ def save_portfolio(portfolio):
         json.dump(portfolio, f, indent=4)
 
 def send_telegram(message):
-    """Sends message to ALL recipients in config"""
+    """Sends text message to ALL recipients"""
     if not CONFIG.get('telegram', {}).get('enabled', False): return
     
     recipients = CONFIG['telegram'].get('recipients', [])
@@ -50,6 +50,66 @@ def send_telegram(message):
             requests.post(url, data={"chat_id": chat_id, "text": message})
         except Exception as e:
             print(f"   >>> ❌ Telegram Failed for {user.get('note', 'User')}: {e}")
+
+# --- NEW FUNCTION: Send Documents (Excel) ---
+def send_telegram_file(file_path, caption=""):
+    """Sends a file to ALL recipients"""
+    if not CONFIG.get('telegram', {}).get('enabled', False): return
+    
+    recipients = CONFIG['telegram'].get('recipients', [])
+    
+    for user in recipients:
+        try:
+            token = user['bot_token']
+            chat_id = user['chat_id']
+            url = f"https://api.telegram.org/bot{token}/sendDocument"
+            
+            with open(file_path, 'rb') as f:
+                files = {'document': f}
+                data = {'chat_id': chat_id, 'caption': caption}
+                requests.post(url, data=data, files=files)
+                print(f"   >>> 📤 Report sent to {user.get('note', 'User')}")
+        except Exception as e:
+            print(f"   >>> ❌ Telegram File Error for {user.get('note', 'User')}: {e}")
+
+# --- NEW FUNCTION: Generate & Send Excel Report ---
+def generate_and_send_report():
+    print("\n📊 Generating Daily Excel Report...")
+    portfolio = load_portfolio()
+    
+    if not portfolio:
+        print("   >>> Portfolio is empty. No report generated.")
+        return
+
+    try:
+        # 1. Convert Portfolio JSON to DataFrame
+        data = []
+        for ticker, info in portfolio.items():
+            row = info.copy()
+            row['Ticker'] = ticker  # Add Ticker as a column
+            data.append(row)
+        
+        df = pd.DataFrame(data)
+        
+        # 2. Reorder columns for better readability (Optional)
+        preferred_order = ['Ticker', 'status', 'entry_date', 'entry_price', 'quantity', 'sl_price', 'initial_sl']
+        # Filter existing columns only
+        cols = [c for c in preferred_order if c in df.columns] + [c for c in df.columns if c not in preferred_order]
+        df = df[cols]
+
+        # 3. Save to Excel
+        timestamp = get_ist_time().strftime('%Y%m%d_%H%M')
+        filename = f"Portfolio_Report_{timestamp}.xlsx"
+        df.to_excel(filename, index=False)
+        
+        # 4. Send to Telegram
+        caption = f"📊 Daily Portfolio Report - {get_ist_time().strftime('%d-%m-%Y')}"
+        send_telegram_file(filename, caption)
+        
+        print(f"   >>> ✅ Report generated and sent: {filename}")
+        
+    except Exception as e:
+        print(f"   >>> ❌ Error generating report: {e}")
 
 def get_ist_time():
     return datetime.now(IST)
@@ -178,7 +238,19 @@ def analyze_market():
 if __name__ == "__main__":
     load_config()
     send_telegram(f"🤖 Bot Active (Nifty 50)\nMonitoring {len(CONFIG['watchlist'])} stocks")
+    
+    # 1. Run Market Analysis immediately
     analyze_market()
+    
+    # 2. Schedule Market Analysis (Every 5 mins)
     schedule.every(CONFIG['strategy_settings']['scan_interval_minutes']).minutes.do(analyze_market)
-    print("Scheduler active...")
-    while True: schedule.run_pending(); time.sleep(1)
+    
+    # 3. Schedule Daily Excel Report (Every day at 15:45 IST)
+    # This ensures you get the file after the market closes.
+    schedule.every().day.at("15:45").do(generate_and_send_report)
+    
+    print("Scheduler active (Scan: 5min, Report: 15:45)...")
+    
+    while True: 
+        schedule.run_pending()
+        time.sleep(1)
