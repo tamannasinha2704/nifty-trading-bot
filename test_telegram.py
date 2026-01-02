@@ -2,8 +2,8 @@ import requests
 import json
 
 # Your Config
-TOKEN = "8084818503:AAGtnTpRo_WQb6igmrpIyw1ZW_T8kYc-z8Q"
-CHAT_ID = "1712000290"
+TOKEN = "YOUR_TOKEN_HERE"
+CHAT_ID = "YOUR_TOKEN_HERE"
 
 url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 data = {"chat_id": CHAT_ID, "text": "🔔 Test from Debugger"}
