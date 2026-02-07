@@ -1,0 +1,7 @@
+# Secrets (NEVER UPLOAD THESE)
+NiftyKey.pem
+config.json
+__pycache__/
+
+# Virtual Environment
+venv/
