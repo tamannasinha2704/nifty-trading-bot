@@ -146,24 +146,24 @@ def calculate_quantity(entry_price, sl_price):
     if risk_per_share <= 0: return 0
     return int(risk_amount / risk_per_share)
 
+# --- STRICT EXIT CONDITIONS ---
 def check_exit_conditions(ticker, trade_data, current_price, ema_fast, ema_slow):
-    entry_price = trade_data['entry_price']
+    """
+    Checks ONLY for:
+    1. Stop Loss Hit
+    2. Death Cross (EMA 5 < EMA 9)
+    """
     sl_price = trade_data['sl_price']
-    status = trade_data['status']
     
-    if ema_fast < ema_slow: return "SELL_ALL", "EMA Death Cross (5 < 9)"
-    if current_price <= sl_price: return "SELL_ALL", f"Stop Loss Hit ({sl_price})"
+    # Condition 1: Death Cross
+    # If Short Term trend (5) drops below Medium Term trend (9) -> SELL
+    if ema_fast < ema_slow: 
+        return "SELL_ALL", "EMA Death Cross (5 < 9)"
     
-    risk = entry_price - trade_data['initial_sl']
-    target_1 = entry_price + risk
-    target_2 = entry_price + (2 * risk)
+    # Condition 2: Stop Loss
+    if current_price <= sl_price: 
+        return "SELL_ALL", f"Stop Loss Hit ({sl_price})"
     
-    if status == 'OPEN' and current_price >= target_1:
-        return "SELL_PARTIAL", f"Target 1 Hit ({target_1:.2f})"
-        
-    if status == 'PARTIAL' and current_price >= target_2 and sl_price < target_1:
-        return "UPDATE_SL", f"Target 2 Hit ({target_2:.2f})"
-        
     return None, None
 
 def analyze_market():
@@ -193,29 +193,17 @@ def analyze_market():
             p_fast, p_slow = float(prev['EMA_F']), float(prev['EMA_S'])
             p_trend, p_long = float(prev['EMA_T']), float(prev['EMA_L'])
             
-            # EXIT CHECKS
+            # --- EXIT LOGIC (STRICT) ---
             if ticker in portfolio:
                 action, reason = check_exit_conditions(ticker, portfolio[ticker], c_price, c_fast, c_slow)
+                
                 if action == "SELL_ALL":
                     msg = f"🔴 EXIT: {ticker}\nPrice: {c_price:.2f}\nReason: {reason}"
                     print(msg); send_telegram(msg)
-                    del portfolio[ticker]; save_portfolio(portfolio)
-                elif action == "SELL_PARTIAL":
-                    qty = portfolio[ticker]['quantity']
-                    sell_qty = int(round(qty * 0.5))
-                    portfolio[ticker]['quantity'] -= sell_qty
-                    portfolio[ticker]['status'] = 'PARTIAL'
-                    portfolio[ticker]['sl_price'] = portfolio[ticker]['entry_price']
-                    msg = f"💰 T1 HIT: {ticker}\nSold {sell_qty} (50%)\nSL moved to Entry"
-                    print(msg); send_telegram(msg); save_portfolio(portfolio)
-                elif action == "UPDATE_SL":
-                    risk = portfolio[ticker]['entry_price'] - portfolio[ticker]['initial_sl']
-                    new_sl = portfolio[ticker]['entry_price'] + risk
-                    portfolio[ticker]['sl_price'] = new_sl
-                    msg = f"📈 T2 HIT: {ticker}\nTrailing SL moved to {new_sl:.2f}"
-                    print(msg); send_telegram(msg); save_portfolio(portfolio)
+                    del portfolio[ticker]
+                    save_portfolio(portfolio)
 
-            # ENTRY CHECKS
+            # --- ENTRY LOGIC ---
             if checking_entries and ticker not in portfolio:
                 cond_align = (c_slow > c_trend) and (c_trend > c_long)
                 cond_cross = (c_fast > c_slow) and (p_fast <= p_slow)
