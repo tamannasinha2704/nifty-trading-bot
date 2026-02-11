@@ -7,10 +7,10 @@ import yfinance as yf
 from datetime import datetime
 
 # --- CONFIG ---
-st.set_page_config(page_title="Nifty Bot Dashboard", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Nifty Bot Dashboard", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 TRADES_FILE = "trades.json"
 HISTORY_FILE = "trade_history.json"
-SIGNALS_FILE = "signals.json" # <--- New File
+SIGNALS_FILE = "signals.json"
 IST = pytz.timezone('Asia/Kolkata')
 
 # --- LOADERS ---
@@ -35,8 +35,8 @@ signals = load_json(SIGNALS_FILE)
 if not signals:
     st.sidebar.info("No activity recorded yet.")
 else:
-    # Show last 10 signals, newest first
-    for s in reversed(signals[-10:]):
+    # Show last 15 signals
+    for s in reversed(signals[-15:]):
         st.sidebar.text(f"🕒 {s['timestamp']}")
         st.sidebar.info(s['message'])
         st.sidebar.markdown("---")
@@ -59,9 +59,7 @@ with tab1:
         st.info("No active trades.")
     else:
         rows = []
-        total_inv = 0
-        total_val = 0
-        total_pnl = 0
+        total_inv, total_val, total_pnl = 0, 0, 0
         
         for ticker, info in portfolio.items():
             qty = info['quantity']
@@ -79,19 +77,22 @@ with tab1:
             rows.append({
                 "Ticker": ticker,
                 "Entry Date": info['entry_date'],
+                "Entry Time": info.get('entry_time', 'N/A'),
                 "Qty": qty,
                 "Entry Price": f"₹{entry:.2f}",
                 "LTP": f"₹{ltp:.2f}",
-                "Invested": f"₹{inv:,.0f}",
-                "Current Value": f"₹{val:,.0f}",
-                "P/L": f"₹{pnl:,.0f}",
-                "P/L %": f"{(pnl/inv)*100:.2f}%"
+                "Invested Value": f"₹{inv:,.0f}",
+                "Present Value": f"₹{val:,.0f}",
+                "Notional P/L": f"₹{pnl:,.0f}",
+                "P/L %": f"{(pnl/inv)*100:.2f}%",
+                "SL Price": f"₹{info['sl_price']:.2f}"
             })
             
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Total Invested", f"₹{total_inv:,.0f}")
         c2.metric("Current Value", f"₹{total_val:,.0f}")
-        c3.metric("Total P/L", f"₹{total_pnl:,.0f}", delta=f"{(total_pnl/total_inv)*100:.2f}%")
+        c3.metric("Unrealized P/L", f"₹{total_pnl:,.0f}", delta=f"{(total_pnl/total_inv)*100:.2f}%")
+        c4.metric("Active Trades", len(portfolio))
         
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
@@ -99,9 +100,7 @@ with tab2:
     if not history:
         st.info("No history yet.")
     else:
-        # Show History Table
-        df_hist = pd.DataFrame(history)
-        st.dataframe(df_hist, use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(history), use_container_width=True, hide_index=True)
 
 if st.button('🔄 Refresh'):
     st.rerun()
