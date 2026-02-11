@@ -67,7 +67,7 @@ def send_telegram(message):
             requests.post(url, data={"chat_id": user['chat_id'], "text": message})
         except: pass
 
-# --- TRADING LOGIC (Same as before) ---
+# --- TRADING LOGIC ---
 def calculate_quantity(entry_price, sl_price):
     capital = CONFIG['strategy_settings']['capital']
     risk_pct = CONFIG['strategy_settings']['risk_per_trade_percent']
@@ -82,18 +82,21 @@ def analyze_market():
     load_config()
     portfolio = load_json(TRADES_FILE)
     
-    # Time Check
+    # Time Check: strictly 3:15 PM to 3:30 PM, Monday through Friday
     now = get_ist_time()
-    is_friday = (now.weekday() == 4)
+    is_weekday = (now.weekday() < 5) # 0 = Monday, 4 = Friday
+    
     start_time = datetime.strptime("15:15", "%H:%M").time()
     end_time = datetime.strptime("15:30", "%H:%M").time()
-    checking_entries = is_friday and (start_time <= now.time() <= end_time)
+    
+    checking_entries = is_weekday and (start_time <= now.time() <= end_time)
 
     print(f"[{now.strftime('%H:%M')}] Scanning... Entry Window: {checking_entries}")
 
     for ticker in CONFIG['watchlist']:
         try:
-            df = yf.download(ticker, period="2y", interval="1wk", progress=False)
+            # yfinance only allows max 730 days for 1-hour intervals
+            df = yf.download(ticker, period="730d", interval="1h", progress=False)
             if len(df) < 55: continue
             
             # Indicators
@@ -151,14 +154,22 @@ def analyze_market():
 def scheduled_job():
     analyze_market()
 
-def friday_wake_up():
-    send_telegram("🔔 Friday Wake Up!\nBot is active and scanning markets (3:15 PM - 3:30 PM).")
+def morning_wake_up():
+    # Only send the message Monday through Friday
+    if get_ist_time().weekday() < 5: 
+        send_telegram("🔔 Market Open! Bot is awake and will look for trades at 3:15 PM.")
 
 if __name__ == "__main__":
     load_config()
     send_telegram(f"🤖 Bot Started.\nTime: {get_ist_time().strftime('%Y-%m-%d %H:%M')}")
+    
+    # 1. Market Scan (Every 5 mins)
     schedule.every(5).minutes.do(scheduled_job)
-    schedule.every().friday.at("15:15").do(friday_wake_up)
+    
+    # 2. Daily Wake Up Alert (At 9:15 AM)
+    schedule.every().day.at("09:15").do(morning_wake_up)
+    
+    print("Scheduler active...")
     
     while True:
         schedule.run_pending()
