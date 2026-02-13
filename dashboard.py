@@ -2,105 +2,88 @@ import streamlit as st
 import pandas as pd
 import json
 import os
-import pytz
-import yfinance as yf
-from datetime import datetime
 
-# --- CONFIG ---
-st.set_page_config(page_title="Nifty Bot Dashboard", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
-TRADES_FILE = "trades.json"
-HISTORY_FILE = "trade_history.json"
-SIGNALS_FILE = "signals.json"
-IST = pytz.timezone('Asia/Kolkata')
+st.set_page_config(page_title="Hourly Swing Bot", layout="wide")
+st.title("⚡ Algo Trading Dashboard (Hourly)")
 
-# --- LOADERS ---
-def load_json(filename):
-    if not os.path.exists(filename): return {} if filename == TRADES_FILE else []
-    try:
-        with open(filename, 'r') as f: return json.load(f)
-    except: return {} if filename == TRADES_FILE else []
+PORTFOLIO_FILE = "portfolio.json"
 
-def get_live_prices(tickers):
-    if not tickers: return {}
-    try:
-        df = yf.download(tickers, period="1d", progress=False)['Close']
-        if len(tickers) == 1: return {tickers[0]: df.iloc[-1]}
-        return df.iloc[-1].to_dict()
-    except: return {}
+def load_data():
+    if not os.path.exists(PORTFOLIO_FILE):
+        return None
+    with open(PORTFOLIO_FILE, 'r') as f:
+        return json.load(f)
 
-# --- SIDEBAR: ACTIVITY LOG ---
-st.sidebar.header("🔔 Activity Log")
-signals = load_json(SIGNALS_FILE)
+data = load_data()
 
-if not signals:
-    st.sidebar.info("No activity recorded yet.")
+if data is None:
+    st.warning("⚠️ No portfolio data found. Please run 'bot.py' first.")
 else:
-    # Show last 15 signals
-    for s in reversed(signals[-15:]):
-        st.sidebar.text(f"🕒 {s['timestamp']}")
-        st.sidebar.info(s['message'])
-        st.sidebar.markdown("---")
+    # --- METRICS ---
+    capital = data.get("capital", 4000000)
+    long_pos = data.get("long_positions", {})
+    short_pos = data.get("short_positions", {})
+    long_hist = data.get("long_history", [])
+    short_hist = data.get("short_history", [])
+    
+    # Calculate Unrealized PnL
+    # (Note: In a real live dashboard, we would fetch live prices here to update PnL. 
+    # For now, we use the prices stored in JSON or assume 0 change if static)
+    unrealized_pnl = 0
+    
+    # Total PnL from History
+    realized_pnl = sum([t['PnL'] for t in long_hist]) + sum([t['PnL'] for t in short_hist])
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("💰 Total Capital", f"₹{capital:,.0f}")
+    col2.metric("📊 Realized P&L", f"₹{realized_pnl:,.2f}", delta_color="normal")
+    col3.metric("🟢 Active Longs", len(long_pos))
+    col4.metric("🔴 Active Shorts", len(short_pos))
+    
+    st.markdown("---")
+    
+    # --- ACTIVE POSITIONS TABS ---
+    tab_long, tab_short = st.tabs(["🟢 Long Positions", "🔴 Short Positions"])
+    
+    with tab_long:
+        if not long_pos:
+            st.info("No Active Long Positions")
+        else:
+            df_long = pd.DataFrame.from_dict(long_pos, orient='index')
+            df_long['Type'] = 'LONG'
+            st.dataframe(df_long[['Type', 'entry_date', 'entry_price', 'qty', 'stop_loss', 'initial_risk_per_share']], use_container_width=True)
+            
+    with tab_short:
+        if not short_pos:
+            st.info("No Active Short Positions")
+        else:
+            df_short = pd.DataFrame.from_dict(short_pos, orient='index')
+            df_short['Type'] = 'SHORT'
+            st.dataframe(df_short[['Type', 'entry_date', 'entry_price', 'qty', 'stop_loss', 'initial_risk_per_share']], use_container_width=True)
 
-# --- MAIN PAGE ---
-st.title("📈 Nifty 50 Swing Trading Bot")
-st.markdown(f"**Last Updated:** {datetime.now(IST).strftime('%d-%b-%Y %H:%M:%S')}")
-
-# Load Data
-portfolio = load_json(TRADES_FILE)
-history = load_json(HISTORY_FILE)
-tickers = list(portfolio.keys())
-live_prices = get_live_prices(tickers)
-
-# --- TABS ---
-tab1, tab2 = st.tabs(["🟢 Active Positions", "🔴 Closed History"])
-
-with tab1:
-    if not portfolio:
-        st.info("No active trades.")
+    st.markdown("### 📜 Trade History")
+    
+    # Combine History
+    all_history = long_hist + short_hist
+    
+    if not all_history:
+        st.info("No completed trades yet.")
     else:
-        rows = []
-        total_inv, total_val, total_pnl = 0, 0, 0
+        df_hist = pd.DataFrame(all_history)
         
-        for ticker, info in portfolio.items():
-            qty = info['quantity']
-            entry = info['entry_price']
-            ltp = live_prices.get(ticker, entry)
-            
-            inv = entry * qty
-            val = ltp * qty
-            pnl = val - inv
-            
-            total_inv += inv
-            total_val += val
-            total_pnl += pnl
-            
-            rows.append({
-                "Ticker": ticker,
-                "Entry Date": info['entry_date'],
-                "Entry Time": info.get('entry_time', 'N/A'),
-                "Qty": qty,
-                "Entry Price": f"₹{entry:.2f}",
-                "LTP": f"₹{ltp:.2f}",
-                "Invested Value": f"₹{inv:,.0f}",
-                "Present Value": f"₹{val:,.0f}",
-                "Notional P/L": f"₹{pnl:,.0f}",
-                "P/L %": f"{(pnl/inv)*100:.2f}%",
-                "SL Price": f"₹{info['sl_price']:.2f}"
-            })
-            
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total Invested", f"₹{total_inv:,.0f}")
-        c2.metric("Current Value", f"₹{total_val:,.0f}")
-        c3.metric("Unrealized P/L", f"₹{total_pnl:,.0f}", delta=f"{(total_pnl/total_inv)*100:.2f}%")
-        c4.metric("Active Trades", len(portfolio))
+        # Sort by Exit Date (assuming ISO format YYYY-MM-DD HH:MM works for sorting)
+        df_hist = df_hist.sort_values(by="Exit Date", ascending=False)
         
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        # Unified Columns Layout
+        cols = ["Ticker", "Type", "Entry Date", "Exit Date", "Entry Price", "Exit Price", "Qty", "PnL", "Reason"]
+        
+        # Color Logic for PnL
+        def color_pnl(val):
+            color = '#d4edda' if val > 0 else '#f8d7da' # Light green / Light red
+            text_color = 'green' if val > 0 else 'red'
+            return f'background-color: {color}; color: {text_color}'
 
-with tab2:
-    if not history:
-        st.info("No history yet.")
-    else:
-        st.dataframe(pd.DataFrame(history), use_container_width=True, hide_index=True)
-
-if st.button('🔄 Refresh'):
-    st.rerun()
+        st.dataframe(
+            df_hist[cols].style.applymap(color_pnl, subset=['PnL']),
+            use_container_width=True
+        )

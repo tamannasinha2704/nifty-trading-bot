@@ -1,144 +1,265 @@
 import yfinance as yf
 import pandas as pd
-import pandas_ta as ta
 import numpy as np
+import os
 
-# --- CONFIGURATION ---
-CONFIG = {
-    # Strategy Parameters
-    "sma_fast": 50,
-    "sma_slow": 200,
-    "macd_fast": 12,
-    "macd_slow": 26,
-    "macd_signal": 9,
-    
-    # Target
-    "ticker": "SBIN.NS",
-    "start_date": "2023-01-01",  # CHANGED: Start 1 year early for indicators
-    "trade_start_date": "2024-01-01", # NEW: When we actually start trading
-    "end_date": "2025-12-31"
-}
+# --- SETTINGS ---
+INITIAL_CAPITAL = 2000000.0  # 20 Lakhs
+RISK_PER_TRADE_PCT = 0.005   # 0.5% Risk per trade
+BROKERAGE_RATE = 0.0015      # 0.15% per side
+START_DATE = "2022-01-01"
+END_DATE = "2026-01-01"
 
-trade_log = []
-active_trade = None # Stores current trade details if we are holding
+# Nifty 50 Watchlist (Auto-fallback)
+NIFTY_50 = [
+    'RELIANCE.NS', 'HDFCBANK.NS', 'ICICIBANK.NS', 'INFY.NS', 'ITC.NS', 'TCS.NS', 'LT.NS', 
+    'BHARTIARTL.NS', 'AXISBANK.NS', 'SBIN.NS', 'KOTAKBANK.NS', 'HINDUNILVR.NS', 'BAJFINANCE.NS', 
+    'M&M.NS', 'MARUTI.NS', 'ASIANPAINT.NS', 'HCLTECH.NS', 'TITAN.NS', 'SUNPHARMA.NS', 'NTPC.NS', 
+    'TATASTEEL.NS', 'ULTRACEMCO.NS', 'POWERGRID.NS', 'ONGC.NS', 'BAJAJFINSV.NS', 'NESTLEIND.NS', 
+    'ADANIENT.NS', 'INDUSINDBK.NS', 'GRASIM.NS', 'ADANIPORTS.NS', 'HINDALCO.NS', 'COALINDIA.NS', 
+    'JSWSTEEL.NS', 'DRREDDY.NS', 'TATAMOTORS.NS', 'APOLLOHOSP.NS', 'TRENT.NS', 'EICHERMOT.NS', 
+    'CIPLA.NS', 'DIVISLAB.NS', 'BPCL.NS', 'TECHM.NS', 'WIPRO.NS', 'BRITANNIA.NS', 'LTIM.NS', 
+    'SHRIRAMFIN.NS', 'BAJAJ-AUTO.NS', 'HEROMOTOCO.NS', 'TATACONSUM.NS', 'HDFCLIFE.NS'
+]
 
-def calculate_dema(series, length):
-    """Calculates Double EMA: 2*EMA - EMA(EMA)"""
-    ema1 = ta.ema(series, length=length)
-    ema2 = ta.ema(ema1, length=length)
-    return (2 * ema1) - ema2
-
-def add_indicators(df):
-    # 1. SMAs
-    df['SMA50'] = ta.sma(df['Close'], length=CONFIG['sma_fast'])
-    df['SMA200'] = ta.sma(df['Close'], length=CONFIG['sma_slow'])
+def calculate_supertrend(df, period=10, multiplier=3):
+    """
+    Custom optimized Supertrend calculation using numpy/pandas.
+    Returns the DataFrame with 'Supertrend' and 'Supertrend_Dir' columns.
+    """
+    # ATR Calculation
+    df['tr0'] = abs(df['High'] - df['Low'])
+    df['tr1'] = abs(df['High'] - df['Close'].shift(1))
+    df['tr2'] = abs(df['Low'] - df['Close'].shift(1))
+    df['TR'] = df[['tr0', 'tr1', 'tr2']].max(axis=1)
+    df['ATR'] = df['TR'].ewm(alpha=1/period, adjust=False).mean()
     
-    # 2. MACD DEMA Logic
-    df['DEMA_Slow'] = calculate_dema(df['Close'], CONFIG['macd_slow'])
-    df['DEMA_Fast'] = calculate_dema(df['Close'], CONFIG['macd_fast'])
+    # Basic Bands
+    hl2 = (df['High'] + df['Low']) / 2
+    df['Basic_Upper'] = hl2 + (multiplier * df['ATR'])
+    df['Basic_Lower'] = hl2 - (multiplier * df['ATR'])
     
-    df['MACD_Line'] = df['DEMA_Fast'] - df['DEMA_Slow']
-    df['Signal_Line'] = calculate_dema(df['MACD_Line'], CONFIG['macd_signal'])
+    # Final Bands Initialization
+    df['Final_Upper'] = df['Basic_Upper']
+    df['Final_Lower'] = df['Basic_Lower']
+    df['Supertrend'] = np.nan
     
-    # 3. Helper for Rising/Falling
-    df['Prev_Signal'] = df['Signal_Line'].shift(1)
+    # Iterative calculation for Supertrend logic
+    for i in range(period, len(df)):
+        # Upper Band Logic
+        if df['Basic_Upper'].iloc[i] < df['Final_Upper'].iloc[i-1] or \
+           df['Close'].iloc[i-1] > df['Final_Upper'].iloc[i-1]:
+            df.loc[df.index[i], 'Final_Upper'] = df['Basic_Upper'].iloc[i]
+        else:
+            df.loc[df.index[i], 'Final_Upper'] = df['Final_Upper'].iloc[i-1]
+            
+        # Lower Band Logic
+        if df['Basic_Lower'].iloc[i] > df['Final_Lower'].iloc[i-1] or \
+           df['Close'].iloc[i-1] < df['Final_Lower'].iloc[i-1]:
+            df.loc[df.index[i], 'Final_Lower'] = df['Basic_Lower'].iloc[i]
+        else:
+            df.loc[df.index[i], 'Final_Lower'] = df['Final_Lower'].iloc[i-1]
+            
+    # Supertrend Selection
+    df['Supertrend'] = np.where(df['Close'] <= df['Final_Upper'], df['Final_Upper'], df['Final_Lower'])
     
+    # Determine Trend Direction (True = Uptrend/Green, False = Downtrend/Red)
+    # Refined logic: If Close > Supertrend, it's Uptrend.
+    # Note: We need a loop or careful vectorization because Supertrend value itself flips.
+    # A simple approach for backtesting:
+    conditions = [
+        (df['Close'] > df['Final_Upper'].shift(1)), 
+        (df['Close'] < df['Final_Lower'].shift(1))
+    ]
+    choices = [True, False] # True = Bullish, False = Bearish
+    
+    # Simple recursive check (Vectorized approximation often fails on flips, so we use hybrid)
+    # However, strictly for the Buy condition "Close > Supertrend", we can just compare Close vs Calculated ST
+    
+    # Re-running the standard logic to ensure 'Supertrend' column is accurate for signals
+    st = [np.nan] * len(df)
+    uptrend = True
+    
+    for i in range(period, len(df)):
+        if uptrend:
+            st[i] = df['Final_Lower'].iloc[i]
+            if df['Close'].iloc[i] < st[i]:
+                uptrend = False
+                st[i] = df['Final_Upper'].iloc[i]
+        else:
+            st[i] = df['Final_Upper'].iloc[i]
+            if df['Close'].iloc[i] > st[i]:
+                uptrend = True
+                st[i] = df['Final_Lower'].iloc[i]
+                
+    df['Supertrend'] = st
     return df
 
-def run_backtest():
-    global active_trade
-    print(f"🚀 Starting SBIN (1 Share) Backtest...")
-    print(f"📅 Period: {CONFIG['start_date']} to Now")
+def run_backtest(ticker):
+    # Download Weekly Data
+    df = yf.download(ticker, start=START_DATE, end=END_DATE, interval="1wk", progress=False)
     
-    # 1. Download Data
-    try:
-        df = yf.download(CONFIG['ticker'], start=CONFIG['start_date'], interval="1d", progress=False)
-        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+    if df.empty or len(df) < 60: 
+        return []
+    
+    # Flatten MultiIndex if necessary
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    
+    # --- INDICATOR CALCULATIONS ---
+    # 1. Supertrend (10, 3)
+    df = calculate_supertrend(df, period=10, multiplier=3)
+    
+    # 2. SMA 50 on HIGH
+    df['SMA_50_High'] = df['High'].rolling(window=50).mean()
+    
+    # 3. Previous Candle High
+    df['Prev_High'] = df['High'].shift(1)
+    
+    df.dropna(inplace=True)
+    
+    # --- TRADING LOGIC ---
+    trades = []
+    in_position = False
+    entry_price = 0.0
+    qty = 0
+    risk_per_share = 0.0
+    
+    for i in range(1, len(df)):
+        curr_date = df.index[i]
+        close = df['Close'].iloc[i]
+        st_val = df['Supertrend'].iloc[i]
+        sma_50 = df['SMA_50_High'].iloc[i]
+        prev_high = df['Prev_High'].iloc[i]
         
-        if len(df) < 50:
-            print("❌ Not enough data.")
-            return
-
-        df = add_indicators(df)
-        df.dropna(inplace=True)
-    except Exception as e:
-        print(f"Error: {e}")
-        return
-
- # 2. Loop through Candles
-    for i in range(len(df)):
-        current_date = df.index[i]
-        row = df.iloc[i]
-
-        # SKIP TRADING if we are before our target start date (2024)
-        if current_date < pd.Timestamp(CONFIG['trade_start_date']):
-            continue 
-
-        # ... (Rest of your Buy/Sell logic remains exactly the same)
+        # Supertrend Filter: Close MUST be above Supertrend (Bullish)
+        is_uptrend = close > st_val
         
-        # --- SELL LOGIC (Check Exit First) ---
-        if active_trade:
-            # Condition: Signal Line Falling
-            cond_falling = row['Signal_Line'] < row['Prev_Signal']
-            
-            if cond_falling:
-                exit_price = row['Close'] # 3:27 PM Execution
-                pnl = exit_price - active_trade['entry_price'] # Profit on 1 share
+        if in_position:
+            # EXIT CONDITION: Close below Supertrend
+            if not is_uptrend: # Close crossed below Supertrend
+                exit_price = close
+                gross_pnl = (exit_price - entry_price) * qty
                 
-                trade_log.append({
-                    'Entry Date': str(active_trade['entry_date'].date()),
-                    'Exit Date': str(current_date.date()),
-                    'Type': 'SELL',
-                    'Entry Price': active_trade['entry_price'],
-                    'Exit Price': exit_price,
-                    'P&L (1 Share)': pnl,
-                    'Reason': 'DEMA Falling'
+                # Brokerage: 0.15% on Buy Value + 0.15% on Sell Value
+                buy_val = entry_price * qty
+                sell_val = exit_price * qty
+                brokerage = (buy_val * BROKERAGE_RATE) + (sell_val * BROKERAGE_RATE)
+                
+                net_pnl = gross_pnl - brokerage
+                
+                trades.append({
+                    'Ticker': ticker,
+                    'Entry Date': entry_date,
+                    'Exit Date': curr_date.strftime('%Y-%m-%d'),
+                    'Entry Price': round(entry_price, 2),
+                    'Exit Price': round(exit_price, 2),
+                    'Qty': qty,
+                    'Gross P/L': round(gross_pnl, 2),
+                    'Brokerage': round(brokerage, 2),
+                    'Net P/L': round(net_pnl, 2),
+                    'Return %': round((net_pnl / buy_val) * 100, 2)
                 })
-                active_trade = None # Reset state (Flat)
-                continue
-
-        # --- BUY LOGIC (Check Entry) ---
-        if active_trade is None:
-            # Conditions:
-            # 1. Price > SMA 50
-            # 2. Price > SMA 200
-            # 3. SMA 50 > SMA 200
-            # 4. Signal Line Rising
+                in_position = False
+                
+        else:
+            # BUY CONDITIONS
+            # 1. Close > Supertrend
+            # 2. Close within 5% above Supertrend (Close <= ST * 1.05)
+            # 3. Close > Prev Candle High
+            # 4. Close > SMA 50 (High)
             
-            cond_price_sma = (row['Close'] > row['SMA50']) and (row['Close'] > row['SMA200'])
-            cond_alignment = (row['SMA50'] > row['SMA200'])
-            cond_rising = (row['Signal_Line'] > row['Prev_Signal'])
+            c1 = is_uptrend
+            c2 = close <= (st_val * 1.05)
+            c3 = close > prev_high
+            c4 = close > sma_50
             
-            if cond_price_sma and cond_alignment and cond_rising:
-                active_trade = {
-                    'entry_price': row['Close'],
-                    'entry_date': current_date
-                }
-
-    # --- RESULTS ---
-    results_df = pd.DataFrame(trade_log)
-    
-    print("\n" + "="*30)
-    print("📊 SBIN STRATEGY REPORT")
-    print("="*30)
-    
-    if results_df.empty:
-        print("No trades triggered.")
-        return
-
-    total_profit = results_df['P&L (1 Share)'].sum()
-    wins = results_df[results_df['P&L (1 Share)'] > 0]
-    win_rate = (len(wins) / len(results_df)) * 100
-    
-    print(f"Total Net P&L (1 Share):  ₹{total_profit:.2f}")
-    print(f"Total Trades:             {len(results_df)}")
-    print(f"Win Rate:                 {win_rate:.2f}%")
-    print("-" * 20)
-    
-    # Save to Excel
-    filename = "sbin_backtest_simple.xlsx"
-    results_df.to_excel(filename, index=False)
-    print(f"✅ Log saved to '{filename}'")
+            if c1 and c2 and c3 and c4:
+                entry_price = close
+                entry_date = curr_date.strftime('%Y-%m-%d')
+                
+                # Position Sizing: 0.5% Risk of Total Capital (Fixed 20L Base)
+                # Stop Loss is the Supertrend Value
+                sl_price = st_val
+                risk_per_share = entry_price - sl_price
+                
+                if risk_per_share > 0:
+                    risk_amount = INITIAL_CAPITAL * RISK_PER_TRADE_PCT # ₹10,000
+                    qty = int(risk_amount / risk_per_share)
+                    
+                    if qty > 0:
+                        in_position = True
+                        
+    return trades
 
 if __name__ == "__main__":
-    run_backtest()
+    print(f"\n🚀 Starting WEEKLY Supertrend Backtest on Nifty 50...")
+    print(f"📅 Period: {START_DATE} to {END_DATE}")
+    print(f"💰 Capital: ₹{INITIAL_CAPITAL:,.0f} | Risk: {RISK_PER_TRADE_PCT*100}% | Brokerage: {BROKERAGE_RATE*100}%")
+    print("-" * 60)
+    
+    all_trades = []
+    
+    for idx, ticker in enumerate(NIFTY_50, 1):
+        print(f"⏳ [{idx}/{len(NIFTY_50)}] Processing {ticker}...")
+        try:
+            stock_trades = run_backtest(ticker)
+            all_trades.extend(stock_trades)
+        except Exception as e:
+            print(f"❌ Error on {ticker}: {e}")
+
+    # --- RESULTS AGGREGATION ---
+    if not all_trades:
+        print("\n📉 No trades found matching criteria.")
+    else:
+        results_df = pd.DataFrame(all_trades)
+        
+        # Sort chronologically
+        results_df.sort_values(by='Exit Date', inplace=True)
+        
+        # Calculate Equity Curve for Drawdown
+        results_df['Cumulative P/L'] = results_df['Net P/L'].cumsum()
+        results_df['Equity'] = INITIAL_CAPITAL + results_df['Cumulative P/L']
+        results_df['Peak'] = results_df['Equity'].cummax()
+        results_df['Drawdown'] = (results_df['Peak'] - results_df['Equity']) / results_df['Peak'] * 100
+        
+        # Metrics
+        total_trades = len(results_df)
+        winners = results_df[results_df['Net P/L'] > 0]
+        losers = results_df[results_df['Net P/L'] <= 0]
+        
+        win_count = len(winners)
+        loss_count = len(losers)
+        win_rate = (win_count / total_trades) * 100
+        
+        gross_pl = results_df['Gross P/L'].sum()
+        total_brokerage = results_df['Brokerage'].sum()
+        net_pl = results_df['Net P/L'].sum()
+        
+        avg_pl = results_df['Net P/L'].mean()
+        max_dd = results_df['Drawdown'].max()
+        
+        final_capital = INITIAL_CAPITAL + net_pl
+        roi = (net_pl / INITIAL_CAPITAL) * 100
+
+        print("\n" + "="*50)
+        print("      📊 STRATEGY PERFORMANCE REPORT")
+        print("="*50)
+        print(f"Total Trades:           {total_trades}")
+        print(f"Win Rate:               {win_rate:.2f}% ({win_count} W / {loss_count} L)")
+        print("-" * 50)
+        print(f"Initial Capital:        ₹{INITIAL_CAPITAL:,.2f}")
+        print(f"Final Capital:          ₹{final_capital:,.2f}")
+        print(f"Net Profit/Loss:        ₹{net_pl:,.2f} ({roi:.2f}%)")
+        print(f"Gross Profit/Loss:      ₹{gross_pl:,.2f}")
+        print(f"Total Brokerage:        ₹{total_brokerage:,.2f}")
+        print("-" * 50)
+        print(f"Avg P/L per Trade:      ₹{avg_pl:,.2f}")
+        print(f"Max Drawdown:           {max_dd:.2f}%")
+        print("="*50)
+        
+        # Export
+        csv_name = "Weekly_Supertrend_Backtest.csv"
+        results_df.drop(columns=['Peak', 'Drawdown'], inplace=True) # Clean export
+        results_df.to_csv(csv_name, index=False)
+        print(f"✅ Detailed trade log saved to '{csv_name}'")
