@@ -22,7 +22,7 @@ config = load_config()
 # Crypto Specific Overrides
 CAPITAL = 10000.0  # $10,000 USD Paper Trading Capital
 RISK_PER_TRADE = 0.005 # 0.5% Risk ($50 per trade)
-BROKERAGE = 0.001  # 0.1% Crypto Exchange average fee
+BROKERAGE = 0.0015  # 0.15% Crypto Exchange average fee  
 TELEGRAM_ENABLED = config['telegram']['enabled']
 TELEGRAM_RECIPIENTS = config['telegram']['recipients']
 
