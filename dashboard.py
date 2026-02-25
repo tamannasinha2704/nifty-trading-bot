@@ -7,7 +7,6 @@ import os
 st.set_page_config(page_title="Hourly Swing Bot", layout="wide")
 
 PORTFOLIO_FILE = "portfolio.json"
-CONFIG_FILE = "config.json"
 
 def load_data():
     if not os.path.exists(PORTFOLIO_FILE):
@@ -48,22 +47,69 @@ else:
     unrealized_long_pnl = sum([(p['current_price'] - p['entry_price']) * p['qty'] for p in open_longs.values()])
     unrealized_short_pnl = sum([(p['entry_price'] - p['current_price']) * p['qty'] for p in open_shorts.values()])
     total_unrealized = unrealized_long_pnl + unrealized_short_pnl
-    
     realized_pnl = sum([t['PnL'] for t in closed_longs]) + sum([t['PnL'] for t in closed_shorts])
     
-    COLUMNS = ['Ticker', 'Entry Date', 'Exit Date', 'Entry Price', 'Exit Price', 'Qty', 'Stop Loss', 'PnL', 'Status', 'Reason']
-
+    # --- TABLE FORMATTING FUNCTIONS ---
     def format_open_positions(pos_dict, position_type):
         rows = []
         for ticker, info in pos_dict.items():
-            pnl = (info['current_price'] - info['entry_price']) * info['qty'] if position_type == "LONG" else (info['entry_price'] - info['current_price']) * info['qty']
+            dt_split = info['entry_date'].split(' ')
+            d = dt_split[0] if len(dt_split) > 0 else '-'
+            t = dt_split[1] if len(dt_split) > 1 else '-'
+            
+            e_price = info['entry_price']
+            c_price = info['current_price']
+            qty = info['qty']
+            e_val = e_price * qty
+            c_val = c_price * qty
+            
+            if position_type == "LONG":
+                b_s = "BUY"
+                pnl = c_val - e_val
+            else:
+                b_s = "SELL"
+                pnl = e_val - c_val
+                
             rows.append({
-                'Ticker': ticker, 'Entry Date': info['entry_date'], 'Exit Date': '-',
-                'Entry Price': info['entry_price'], 'Exit Price': info['current_price'], 
-                'Qty': info['qty'], 'Stop Loss': info['stop_loss'], 'PnL': round(pnl, 2),
-                'Status': 'OPEN', 'Reason': '-'
+                'Date': d, 'Time': t, 'Script Name': ticker, 'Buy/Sell': b_s,
+                'Price': e_price, 'Qty': qty, 'Value': round(e_val, 2),
+                'Current Price': c_price, 'Current Value': round(c_val, 2), 'Current P/L': round(pnl, 2)
             })
-        return pd.DataFrame(rows, columns=COLUMNS) if rows else pd.DataFrame(columns=COLUMNS)
+        return pd.DataFrame(rows)
+
+    def format_closed_positions(history_list, position_type):
+        rows = []
+        for trade in history_list:
+            ent_split = trade['Entry Date'].split(' ')
+            ent_d = ent_split[0] if len(ent_split) > 0 else '-'
+            ent_t = ent_split[1] if len(ent_split) > 1 else '-'
+            
+            ext_split = trade['Exit Date'].split(' ')
+            ext_d = ext_split[0] if len(ext_split) > 0 else '-'
+            ext_t = ext_split[1] if len(ext_split) > 1 else '-'
+            
+            e_price = trade['Entry Price']
+            ex_price = trade['Exit Price']
+            qty = trade['Qty']
+            e_val = e_price * qty
+            ex_val = ex_price * qty
+            pnl = trade['PnL']
+            
+            # Logic maps entry/exit to Buy/Sell depending on trade direction
+            if position_type == "LONG":
+                buy_d, buy_t, buy_p, buy_v = ent_d, ent_t, e_price, e_val
+                sell_d, sell_t, sell_p, sell_v = ext_d, ext_t, ex_price, ex_val
+            else:
+                sell_d, sell_t, sell_p, sell_v = ent_d, ent_t, e_price, e_val
+                buy_d, buy_t, buy_p, buy_v = ext_d, ext_t, ex_price, ex_val
+                
+            rows.append({
+                'Buy Date': buy_d, 'Buy Time': buy_t, 'Script Name': trade['Ticker'],
+                'Buy Price': buy_p, 'Buy Qty': qty, 'Buy Value': round(buy_v, 2),
+                'Sell Date': sell_d, 'Sell Time': sell_t, 'Sell Price': sell_p,
+                'Sell Qty': qty, 'Sell Value': round(sell_v, 2), 'P/L': round(pnl, 2)
+            })
+        return pd.DataFrame(rows)
 
     def color_pnl(val):
         if isinstance(val, (int, float)):
@@ -79,22 +125,34 @@ else:
     col4.metric("🔄 Active Trades", f"{len(open_longs)} L / {len(open_shorts)} S")
 
     st.markdown("---")
-
+    
     # --- TABS FOR TABLES ---
     t1, t2, t3, t4 = st.tabs(["🟢 Open Longs", "🔴 Open Shorts", "✅ Closed Longs", "❌ Closed Shorts"])
 
     with t1:
         df_ol = format_open_positions(open_longs, "LONG")
-        st.dataframe(df_ol.style.map(color_pnl, subset=['PnL']), use_container_width=True, hide_index=True)
+        if not df_ol.empty:
+            st.dataframe(df_ol.style.map(color_pnl, subset=['Current P/L']), use_container_width=True, hide_index=True)
+        else:
+            st.info("No open long positions.")
 
     with t2:
         df_os = format_open_positions(open_shorts, "SHORT")
-        st.dataframe(df_os.style.map(color_pnl, subset=['PnL']), use_container_width=True, hide_index=True)
+        if not df_os.empty:
+            st.dataframe(df_os.style.map(color_pnl, subset=['Current P/L']), use_container_width=True, hide_index=True)
+        else:
+            st.info("No open short positions.")
 
     with t3:
-        df_cl = pd.DataFrame(closed_longs, columns=COLUMNS) if closed_longs else pd.DataFrame(columns=COLUMNS)
-        st.dataframe(df_cl.style.map(color_pnl, subset=['PnL']), use_container_width=True, hide_index=True)
+        df_cl = format_closed_positions(closed_longs, "LONG")
+        if not df_cl.empty:
+            st.dataframe(df_cl.style.map(color_pnl, subset=['P/L']), use_container_width=True, hide_index=True)
+        else:
+            st.info("No closed long positions.")
 
     with t4:
-        df_cs = pd.DataFrame(closed_shorts, columns=COLUMNS) if closed_shorts else pd.DataFrame(columns=COLUMNS)
-        st.dataframe(df_cs.style.map(color_pnl, subset=['PnL']), use_container_width=True, hide_index=True)
+        df_cs = format_closed_positions(closed_shorts, "SHORT")
+        if not df_cs.empty:
+            st.dataframe(df_cs.style.map(color_pnl, subset=['P/L']), use_container_width=True, hide_index=True)
+        else:
+            st.info("No closed short positions.")
