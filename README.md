@@ -1,77 +1,35 @@
-NIFTY 50 WEEKLY SWING TRADING BOT
+# Dual-Engine Algorithmic Trading System 📈
 
-DESCRIPTION This is a Python-based automated trading bot designed for swing trading Nifty 50 stocks. It scans the market using Weekly candles to find trend-following opportunities based on EMA crossovers. It runs automatically on a schedule, logs trades to a local file (Paper Trading), and sends real-time alerts and daily Excel reports via Telegram.
+An automated, cloud-hosted paper trading system designed to scan both Indian Equities (Nifty 50) and Cryptocurrencies. The system identifies trend-following setups on a 1-hour timeframe, manages risk with dynamic trailing stops, and visualizes real-time performance through dual Streamlit dashboards.
 
-FEATURES
+## System Architecture
+* **Nifty Engine:** Fetches live market data using the **Angel One SmartAPI** (handling automated TOTP authentication).
+* **Crypto Engine:** Fetches live OHLCV data using the **Binance Public API**.
+* **Cloud Infrastructure:** Deployed on an **AWS EC2** instance, running continuously via Linux `screen` sessions.
+* **Monitoring:** Live tracking via **Streamlit** dashboards and instant trade notifications via **Telegram Bot API**.
 
-Automated Market Scanning: Runs automatically every Friday between 3:15 PM and 3:30 PM IST (or Thursday if Friday is a holiday).
+## The Trading Strategy
+Both engines operate on a **1-Hour Timeframe** and execute the following logic:
 
-Telegram Integration: Sends instant alerts for Buy, Sell, and Stop Loss updates.
+### 1. Trend Identification (The Filter)
+A trade is only considered if the broader trend aligns across multiple moving averages:
+* **Long Trend:** 100 SMA > 200 SMA, 50 EMA > 100 SMA, and 21 EMA > 50 EMA.
+* **Short Trend:** The exact inverse of the above.
 
-Daily Reporting: Generates an Excel file of your active portfolio and sends it to your Telegram at 3:45 PM every day.
+### 2. Entry Trigger
+* **Long Entry:** 10 EMA crosses *above* the 21 EMA.
+* **Short Entry:** 10 EMA crosses *below* the 21 EMA.
+* **Position Sizing:** Dynamically calculated based on a fixed percentage of total capital (Capital * Risk Per Trade) divided by the Stop Loss point distance.
 
-Risk Management: Automatically calculates trade quantity based on risk percentage and handles partial profit booking.
+### 3. Trade Management & Exits
+* **Initial Stop Loss:** Placed just below/above the 21 EMA.
+* **Trailing Stop Loss:** * At **1:1 Risk/Reward**, the SL is moved to breakeven.
+  * At **2:1 Risk/Reward**, the SL is trailed to lock in 1R profit.
+* **Strategy Exit:** The position is closed early if momentum shifts (e.g., for longs, if the 5 EMA crosses *below* the 10 EMA).
+* **Brokerage Integration:** All PnL calculations automatically deduct a realistic **0.15% brokerage fee** per trade round-trip for accurate simulation.
 
-Data Persistence: Saves all trade data to a JSON file so no data is lost if the server restarts.
-
-STRATEGY LOGIC The bot uses a 4-EMA trend-following strategy on Weekly Candles.
-
-Indicators Used:
-
-EMA 5 (Fast)
-
-EMA 9 (Slow)
-
-EMA 21 (Trend)
-
-EMA 50 (Long Trend)
-
-Buy Conditions (All must be true):
-
-Trend Alignment: EMA 9 is above EMA 21, and EMA 21 is above EMA 50.
-
-Crossover Trigger: EMA 5 crosses above EMA 9.
-
-Momentum Check: All four EMAs (5, 9, 21, 50) are higher than their values from the previous week.
-
-Sell Conditions:
-
-Stop Loss: Price drops below the calculated Stop Loss level.
-
-Death Cross: EMA 5 crosses below EMA 9.
-
-Target & Trailing Logic:
-
-Target 1 (1:1 Risk): Sells 50% of the position and moves Stop Loss to the Entry Price.
-
-Target 2 (1:2 Risk): Trails the Stop Loss up to lock in profits.
-
-INSTALLATION
-
-Clone this repository to your local machine or server.
-
-Install the required Python libraries using the command: pip install yfinance pandas pandas_ta schedule requests openpyxl
-
-Configure your settings in the config.json file (see Configuration section).
-
-CONFIGURATION (config.json) You must update the config.json file with your specific details:
-
-telegram: Add your Bot Token and Chat ID here to receive alerts.
-
-strategy_settings: Adjust your capital, risk percentage, and test mode.
-
-watchlist: List of stock symbols to scan (e.g., RELIANCE.NS, TCS.NS).
-
-HOW TO RUN To start the bot, run the following command in your terminal: python3 bot.py
-
-The bot will print a confirmation message and begin its schedule. It is designed to run 24/7 on a cloud server (like AWS EC2).
-
-FILES IN THIS REPOSITORY
-
-bot.py: The main script containing the strategy, scheduling, and telegram logic.
-
-config.json: Configuration file for user settings and watchlist.
-
-trades.json: Automatically created file that stores your active and closed trades.
-
-DISCLAIMER This software is for educational purposes only. Do not risk money you cannot afford to lose. The authors are not responsible for any financial losses incurred from using this code.
+## Tech Stack
+* **Python** (Pandas, Numpy, Requests)
+* **Streamlit** (Data visualization)
+* **SmartAPI** (Angel One connection)
+* **PyOTP** (Automated 2FA)

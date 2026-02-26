@@ -1,212 +1,193 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import os
+from datetime import datetime, timedelta
 
 # --- SETTINGS ---
 INITIAL_CAPITAL = 2000000.0  # 20 Lakhs
 RISK_PER_TRADE_PCT = 0.005   # 0.5% Risk per trade
 BROKERAGE_RATE = 0.0015      # 0.15% per side
-START_DATE = "2022-01-01"
-END_DATE = "2026-01-01"
+HARD_STOP_PCT = 0.02         # 2% Hard Stop Loss
 
-# Nifty 50 Watchlist (Auto-fallback)
-NIFTY_50 = [
-    'RELIANCE.NS', 'HDFCBANK.NS', 'ICICIBANK.NS', 'INFY.NS', 'ITC.NS', 'TCS.NS', 'LT.NS', 
-    'BHARTIARTL.NS', 'AXISBANK.NS', 'SBIN.NS', 'KOTAKBANK.NS', 'HINDUNILVR.NS', 'BAJFINANCE.NS', 
-    'M&M.NS', 'MARUTI.NS', 'ASIANPAINT.NS', 'HCLTECH.NS', 'TITAN.NS', 'SUNPHARMA.NS', 'NTPC.NS', 
-    'TATASTEEL.NS', 'ULTRACEMCO.NS', 'POWERGRID.NS', 'ONGC.NS', 'BAJAJFINSV.NS', 'NESTLEIND.NS', 
-    'ADANIENT.NS', 'INDUSINDBK.NS', 'GRASIM.NS', 'ADANIPORTS.NS', 'HINDALCO.NS', 'COALINDIA.NS', 
-    'JSWSTEEL.NS', 'DRREDDY.NS', 'TATAMOTORS.NS', 'APOLLOHOSP.NS', 'TRENT.NS', 'EICHERMOT.NS', 
-    'CIPLA.NS', 'DIVISLAB.NS', 'BPCL.NS', 'TECHM.NS', 'WIPRO.NS', 'BRITANNIA.NS', 'LTIM.NS', 
-    'SHRIRAMFIN.NS', 'BAJAJ-AUTO.NS', 'HEROMOTOCO.NS', 'TATACONSUM.NS', 'HDFCLIFE.NS'
-]
+# yfinance only allows 1h data for the last 730 days. 
+# Calculating dates dynamically for the max 1h window.
+END_DATE = datetime.today().strftime('%Y-%m-%d')
+START_DATE = (datetime.today() - timedelta(days=729)).strftime('%Y-%m-%d')
 
-def calculate_supertrend(df, period=10, multiplier=3):
+# Target Ticker: Nifty 50 Spot Index
+TICKER = "^NSEI" 
+
+def calculate_t3(df, length=8, v_factor=0.7):
     """
-    Custom optimized Supertrend calculation using numpy/pandas.
-    Returns the DataFrame with 'Supertrend' and 'Supertrend_Dir' columns.
+    Calculates Tillson T3 Moving Average.
     """
-    # ATR Calculation
-    df['tr0'] = abs(df['High'] - df['Low'])
-    df['tr1'] = abs(df['High'] - df['Close'].shift(1))
-    df['tr2'] = abs(df['Low'] - df['Close'].shift(1))
-    df['TR'] = df[['tr0', 'tr1', 'tr2']].max(axis=1)
-    df['ATR'] = df['TR'].ewm(alpha=1/period, adjust=False).mean()
-    
-    # Basic Bands
-    hl2 = (df['High'] + df['Low']) / 2
-    df['Basic_Upper'] = hl2 + (multiplier * df['ATR'])
-    df['Basic_Lower'] = hl2 - (multiplier * df['ATR'])
-    
-    # Final Bands Initialization
-    df['Final_Upper'] = df['Basic_Upper']
-    df['Final_Lower'] = df['Basic_Lower']
-    df['Supertrend'] = np.nan
-    
-    # Iterative calculation for Supertrend logic
-    for i in range(period, len(df)):
-        # Upper Band Logic
-        if df['Basic_Upper'].iloc[i] < df['Final_Upper'].iloc[i-1] or \
-           df['Close'].iloc[i-1] > df['Final_Upper'].iloc[i-1]:
-            df.loc[df.index[i], 'Final_Upper'] = df['Basic_Upper'].iloc[i]
-        else:
-            df.loc[df.index[i], 'Final_Upper'] = df['Final_Upper'].iloc[i-1]
-            
-        # Lower Band Logic
-        if df['Basic_Lower'].iloc[i] > df['Final_Lower'].iloc[i-1] or \
-           df['Close'].iloc[i-1] < df['Final_Lower'].iloc[i-1]:
-            df.loc[df.index[i], 'Final_Lower'] = df['Basic_Lower'].iloc[i]
-        else:
-            df.loc[df.index[i], 'Final_Lower'] = df['Final_Lower'].iloc[i-1]
-            
-    # Supertrend Selection
-    df['Supertrend'] = np.where(df['Close'] <= df['Final_Upper'], df['Final_Upper'], df['Final_Lower'])
-    
-    # Determine Trend Direction (True = Uptrend/Green, False = Downtrend/Red)
-    # Refined logic: If Close > Supertrend, it's Uptrend.
-    # Note: We need a loop or careful vectorization because Supertrend value itself flips.
-    # A simple approach for backtesting:
-    conditions = [
-        (df['Close'] > df['Final_Upper'].shift(1)), 
-        (df['Close'] < df['Final_Lower'].shift(1))
-    ]
-    choices = [True, False] # True = Bullish, False = Bearish
-    
-    # Simple recursive check (Vectorized approximation often fails on flips, so we use hybrid)
-    # However, strictly for the Buy condition "Close > Supertrend", we can just compare Close vs Calculated ST
-    
-    # Re-running the standard logic to ensure 'Supertrend' column is accurate for signals
-    st = [np.nan] * len(df)
-    uptrend = True
-    
-    for i in range(period, len(df)):
-        if uptrend:
-            st[i] = df['Final_Lower'].iloc[i]
-            if df['Close'].iloc[i] < st[i]:
-                uptrend = False
-                st[i] = df['Final_Upper'].iloc[i]
-        else:
-            st[i] = df['Final_Upper'].iloc[i]
-            if df['Close'].iloc[i] > st[i]:
-                uptrend = True
-                st[i] = df['Final_Lower'].iloc[i]
-                
-    df['Supertrend'] = st
+    # Calculate EMA constants
+    a = v_factor
+    c1 = -a**3
+    c2 = 3*a**2 + 3*a**3
+    c3 = -6*a**2 - 3*a - 3*a**3
+    c4 = 1 + 3*a + a**3 + 3*a**2
+
+    # Calculate sequential EMAs
+    e1 = df['Close'].ewm(span=length, adjust=False).mean()
+    e2 = e1.ewm(span=length, adjust=False).mean()
+    e3 = e2.ewm(span=length, adjust=False).mean()
+    e4 = e3.ewm(span=length, adjust=False).mean()
+    e5 = e4.ewm(span=length, adjust=False).mean()
+    e6 = e5.ewm(span=length, adjust=False).mean()
+
+    # T3 Formula
+    df['T3'] = c1*e6 + c2*e5 + c3*e4 + c4*e3
     return df
 
 def run_backtest(ticker):
-    # Download Weekly Data
-    df = yf.download(ticker, start=START_DATE, end=END_DATE, interval="1wk", progress=False)
+    # Download Hourly Data
+    df = yf.download(ticker, start=START_DATE, end=END_DATE, interval="1h", progress=False)
     
-    if df.empty or len(df) < 60: 
+    if df.empty or len(df) < 50: 
         return []
     
-    # Flatten MultiIndex if necessary
+    # Flatten MultiIndex if necessary (recent yfinance updates)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    
+        
     # --- INDICATOR CALCULATIONS ---
-    # 1. Supertrend (10, 3)
-    df = calculate_supertrend(df, period=10, multiplier=3)
-    
-    # 2. SMA 50 on HIGH
-    df['SMA_50_High'] = df['High'].rolling(window=50).mean()
-    
-    # 3. Previous Candle High
-    df['Prev_High'] = df['High'].shift(1)
-    
+    df = calculate_t3(df, length=8, v_factor=0.7)
     df.dropna(inplace=True)
     
     # --- TRADING LOGIC ---
     trades = []
-    in_position = False
+    position = 0 # 1 for Long, -1 for Short, 0 for Flat
     entry_price = 0.0
+    entry_date = None
     qty = 0
-    risk_per_share = 0.0
     
     for i in range(1, len(df)):
         curr_date = df.index[i]
         close = df['Close'].iloc[i]
-        st_val = df['Supertrend'].iloc[i]
-        sma_50 = df['SMA_50_High'].iloc[i]
-        prev_high = df['Prev_High'].iloc[i]
+        high = df['High'].iloc[i]
+        low = df['Low'].iloc[i]
+        t3_val = df['T3'].iloc[i]
         
-        # Supertrend Filter: Close MUST be above Supertrend (Bullish)
-        is_uptrend = close > st_val
+        # Check Crosses for Entry/Exit signals
+        bullish_close = close > t3_val
+        bearish_close = close < t3_val
         
-        if in_position:
-            # EXIT CONDITION: Close below Supertrend
-            if not is_uptrend: # Close crossed below Supertrend
-                exit_price = close
-                gross_pnl = (exit_price - entry_price) * qty
+        if position == 1: # CURRENTLY LONG
+            hard_sl_price = entry_price * (1 - HARD_STOP_PCT)
+            
+            # 1. Check Hard Stop Loss (Intra-candle via Low)
+            if low <= hard_sl_price:
+                exit_price = hard_sl_price
+                exit_reason = "2% SL Hit"
                 
-                # Brokerage: 0.15% on Buy Value + 0.15% on Sell Value
+                gross_pnl = (exit_price - entry_price) * qty
                 buy_val = entry_price * qty
                 sell_val = exit_price * qty
                 brokerage = (buy_val * BROKERAGE_RATE) + (sell_val * BROKERAGE_RATE)
-                
                 net_pnl = gross_pnl - brokerage
                 
-                trades.append({
-                    'Ticker': ticker,
-                    'Entry Date': entry_date,
-                    'Exit Date': curr_date.strftime('%Y-%m-%d'),
-                    'Entry Price': round(entry_price, 2),
-                    'Exit Price': round(exit_price, 2),
-                    'Qty': qty,
-                    'Gross P/L': round(gross_pnl, 2),
-                    'Brokerage': round(brokerage, 2),
-                    'Net P/L': round(net_pnl, 2),
-                    'Return %': round((net_pnl / buy_val) * 100, 2)
-                })
-                in_position = False
+                trades.append(create_trade_log(ticker, "LONG", entry_date, curr_date, entry_price, exit_price, qty, gross_pnl, brokerage, net_pnl, buy_val, exit_reason))
+                position = 0 # Flat
                 
-        else:
-            # BUY CONDITIONS
-            # 1. Close > Supertrend
-            # 2. Close within 5% above Supertrend (Close <= ST * 1.05)
-            # 3. Close > Prev Candle High
-            # 4. Close > SMA 50 (High)
+            # 2. Check Reversal (Candle Close Below T3)
+            elif bearish_close:
+                exit_price = close
+                exit_reason = "T3 Cross Down"
+                
+                gross_pnl = (exit_price - entry_price) * qty
+                buy_val = entry_price * qty
+                sell_val = exit_price * qty
+                brokerage = (buy_val * BROKERAGE_RATE) + (sell_val * BROKERAGE_RATE)
+                net_pnl = gross_pnl - brokerage
+                
+                trades.append(create_trade_log(ticker, "LONG", entry_date, curr_date, entry_price, exit_price, qty, gross_pnl, brokerage, net_pnl, buy_val, exit_reason))
+                
+                # Immediately Enter Short
+                position, entry_price, entry_date, qty = enter_trade(curr_date, close, -1)
+
+        elif position == -1: # CURRENTLY SHORT
+            hard_sl_price = entry_price * (1 + HARD_STOP_PCT)
             
-            c1 = is_uptrend
-            c2 = close <= (st_val * 1.05)
-            c3 = close > prev_high
-            c4 = close > sma_50
-            
-            if c1 and c2 and c3 and c4:
-                entry_price = close
-                entry_date = curr_date.strftime('%Y-%m-%d')
+            # 1. Check Hard Stop Loss (Intra-candle via High)
+            if high >= hard_sl_price:
+                exit_price = hard_sl_price
+                exit_reason = "2% SL Hit"
                 
-                # Position Sizing: 0.5% Risk of Total Capital (Fixed 20L Base)
-                # Stop Loss is the Supertrend Value
-                sl_price = st_val
-                risk_per_share = entry_price - sl_price
+                gross_pnl = (entry_price - exit_price) * qty
+                sell_val = entry_price * qty
+                buy_val = exit_price * qty
+                brokerage = (buy_val * BROKERAGE_RATE) + (sell_val * BROKERAGE_RATE)
+                net_pnl = gross_pnl - brokerage
                 
-                if risk_per_share > 0:
-                    risk_amount = INITIAL_CAPITAL * RISK_PER_TRADE_PCT # ₹10,000
-                    qty = int(risk_amount / risk_per_share)
-                    
-                    if qty > 0:
-                        in_position = True
-                        
+                trades.append(create_trade_log(ticker, "SHORT", entry_date, curr_date, entry_price, exit_price, qty, gross_pnl, brokerage, net_pnl, sell_val, exit_reason))
+                position = 0 # Flat
+                
+            # 2. Check Reversal (Candle Close Above T3)
+            elif bullish_close:
+                exit_price = close
+                exit_reason = "T3 Cross Up"
+                
+                gross_pnl = (entry_price - exit_price) * qty
+                sell_val = entry_price * qty
+                buy_val = exit_price * qty
+                brokerage = (buy_val * BROKERAGE_RATE) + (sell_val * BROKERAGE_RATE)
+                net_pnl = gross_pnl - brokerage
+                
+                trades.append(create_trade_log(ticker, "SHORT", entry_date, curr_date, entry_price, exit_price, qty, gross_pnl, brokerage, net_pnl, sell_val, exit_reason))
+                
+                # Immediately Enter Long
+                position, entry_price, entry_date, qty = enter_trade(curr_date, close, 1)
+
+        elif position == 0: # CURRENTLY FLAT
+            if bullish_close:
+                position, entry_price, entry_date, qty = enter_trade(curr_date, close, 1)
+            elif bearish_close:
+                position, entry_price, entry_date, qty = enter_trade(curr_date, close, -1)
+
     return trades
 
+def enter_trade(date, price, pos_type):
+    """
+    Helper to calculate position sizing for entering a trade.
+    pos_type: 1 for Long, -1 for Short
+    """
+    risk_amount = INITIAL_CAPITAL * RISK_PER_TRADE_PCT # Fix amount to risk
+    risk_per_share = price * HARD_STOP_PCT # Distance to hard stop
+    
+    qty = int(risk_amount / risk_per_share) if risk_per_share > 0 else 0
+    return pos_type if qty > 0 else 0, price, date, qty
+
+def create_trade_log(ticker, type, entry_date, exit_date, entry_price, exit_price, qty, gross_pnl, brokerage, net_pnl, base_val, reason):
+    """
+    Helper to format the trade record dict consistently.
+    """
+    return {
+        'Ticker': ticker,
+        'Type': type,
+        'Entry Date': entry_date.strftime('%Y-%m-%d %H:%M'),
+        'Exit Date': exit_date.strftime('%Y-%m-%d %H:%M'),
+        'Exit Reason': reason,
+        'Entry Price': round(entry_price, 2),
+        'Exit Price': round(exit_price, 2),
+        'Qty': qty,
+        'Gross P/L': round(gross_pnl, 2),
+        'Brokerage': round(brokerage, 2),
+        'Net P/L': round(net_pnl, 2),
+        'Return %': round((net_pnl / base_val) * 100, 2) if base_val > 0 else 0
+    }
+
 if __name__ == "__main__":
-    print(f"\n🚀 Starting WEEKLY Supertrend Backtest on Nifty 50...")
-    print(f"📅 Period: {START_DATE} to {END_DATE}")
-    print(f"💰 Capital: ₹{INITIAL_CAPITAL:,.0f} | Risk: {RISK_PER_TRADE_PCT*100}% | Brokerage: {BROKERAGE_RATE*100}%")
-    print("-" * 60)
+    print(f"\n🚀 Starting HOURLY T3(8) Backtest on {TICKER}...")
+    print(f"📅 Period: {START_DATE} to {END_DATE} (Max 1hr Data Limit)")
+    print(f"💰 Capital: ₹{INITIAL_CAPITAL:,.0f} | Stop Loss: {HARD_STOP_PCT*100}% | Brokerage: {BROKERAGE_RATE*100}%")
+    print("-" * 65)
     
-    all_trades = []
-    
-    for idx, ticker in enumerate(NIFTY_50, 1):
-        print(f"⏳ [{idx}/{len(NIFTY_50)}] Processing {ticker}...")
-        try:
-            stock_trades = run_backtest(ticker)
-            all_trades.extend(stock_trades)
-        except Exception as e:
-            print(f"❌ Error on {ticker}: {e}")
+    try:
+        all_trades = run_backtest(TICKER)
+    except Exception as e:
+        print(f"❌ Error during backtest: {e}")
+        all_trades = []
 
     # --- RESULTS AGGREGATION ---
     if not all_trades:
@@ -230,7 +211,10 @@ if __name__ == "__main__":
         
         win_count = len(winners)
         loss_count = len(losers)
-        win_rate = (win_count / total_trades) * 100
+        win_rate = (win_count / total_trades) * 100 if total_trades > 0 else 0
+        
+        long_trades = results_df[results_df['Type'] == 'LONG']
+        short_trades = results_df[results_df['Type'] == 'SHORT']
         
         gross_pl = results_df['Gross P/L'].sum()
         total_brokerage = results_df['Brokerage'].sum()
@@ -245,7 +229,7 @@ if __name__ == "__main__":
         print("\n" + "="*50)
         print("      📊 STRATEGY PERFORMANCE REPORT")
         print("="*50)
-        print(f"Total Trades:           {total_trades}")
+        print(f"Total Trades:           {total_trades} (Long: {len(long_trades)}, Short: {len(short_trades)})")
         print(f"Win Rate:               {win_rate:.2f}% ({win_count} W / {loss_count} L)")
         print("-" * 50)
         print(f"Initial Capital:        ₹{INITIAL_CAPITAL:,.2f}")
@@ -259,7 +243,7 @@ if __name__ == "__main__":
         print("="*50)
         
         # Export
-        csv_name = "Weekly_Supertrend_Backtest.csv"
+        csv_name = "Hourly_T3_Nifty_Backtest.csv"
         results_df.drop(columns=['Peak', 'Drawdown'], inplace=True) # Clean export
         results_df.to_csv(csv_name, index=False)
         print(f"✅ Detailed trade log saved to '{csv_name}'")
