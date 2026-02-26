@@ -1,10 +1,11 @@
-import yfinance as yf
 import pandas as pd
 import numpy as np
 import json
 import os
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
+from SmartApi import SmartConnect
+import pyotp
 
 # --- CONFIGURATION FILES ---
 PORTFOLIO_FILE = "portfolio.json"
@@ -25,6 +26,49 @@ BROKERAGE = config['strategy_settings']['brokerage_percent'] / 100.0
 WATCHLIST = config['watchlist']
 TELEGRAM_ENABLED = config['telegram']['enabled']
 TELEGRAM_RECIPIENTS = config['telegram']['recipients']
+
+# --- ANGEL ONE API SETUP ---
+def get_angel_session():
+    print("🔐 Authenticating with Angel One SmartAPI...")
+    try:
+        api_key = config['angel_one']['api_key']
+        client_id = config['angel_one']['client_id']
+        pin = config['angel_one']['pin']
+        totp_secret = config['angel_one']['totp_secret']
+        
+        smartApi = SmartConnect(api_key=api_key)
+        totp = pyotp.TOTP(totp_secret).now()
+        session = smartApi.generateSession(client_id, pin, totp)
+        
+        if session.get('status'):
+            print("✅ SmartAPI Login Successful!")
+            return smartApi
+        else:
+            print("❌ Angel One Login Failed:", session)
+            exit()
+    except Exception as e:
+        print("❌ Angel One Connection Error:", e)
+        exit()
+
+def get_token_map():
+    print("🔄 Fetching NSE Token Master List...")
+    url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+    try:
+        response = requests.get(url, timeout=10)
+        instrument_list = response.json()
+        token_map = {}
+        for instrument in instrument_list:
+            if instrument["exch_seg"] == "NSE" and instrument["symbol"].endswith("-EQ"):
+                base_symbol = instrument["symbol"].replace("-EQ", "")
+                token_map[base_symbol] = instrument["token"]
+        return token_map
+    except Exception as e:
+        print(f"❌ Failed to fetch tokens: {e}")
+        return {}
+
+# Initialize Angel One connection and fetch tokens
+smartApi = get_angel_session()
+TOKEN_MAP = get_token_map()
 
 # --- HELPER FUNCTIONS ---
 def send_telegram(message):
@@ -51,7 +95,7 @@ def load_portfolio():
         "open_shorts": {}, 
         "closed_longs": [], 
         "closed_shorts": [],
-        "signals": [] # NEW: Stores live signals for dashboard
+        "signals": []
     }
 
 def save_portfolio(data):
@@ -66,27 +110,51 @@ def log_event(data, message):
     
     if "signals" not in data: data["signals"] = []
     data["signals"].insert(0, log_msg)
-    data["signals"] = data["signals"][:100] # Keep only last 100 signals
+    data["signals"] = data["signals"][:100]
     
     send_telegram(f"🤖 Algo Alert\n{message}")
 
+# --- UPDATED DATA FETCHING ---
 def fetch_hourly_data(ticker):
-    """Fetches 1-Hour data and calculates MAs."""
+    """Fetches 1-Hour data from Angel One SmartAPI and calculates MAs."""
+    if smartApi is None: return None, None
+    
+    # Convert "RELIANCE.NS" to "RELIANCE" to find the token
+    base_symbol = ticker.replace(".NS", "")
+    token = TOKEN_MAP.get(base_symbol)
+    
+    if not token:
+        print(f"⚠️ Token not found for {ticker}")
+        return None, None
+        
+    to_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+    from_date = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d %H:%M")
+    
     try:
-        df = yf.download(ticker, period="60d", interval="1h", progress=False)
-        if df.empty or len(df) < 205: return None, None # Safely skip Yahoo 404s
+        historicParam = {
+            "exchange": "NSE",
+            "symboltoken": token,
+            "interval": "ONE_HOUR",
+            "fromdate": from_date,
+            "todate": to_date
+        }
+        res = smartApi.getCandleData(historicParam)
         
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-
-        df['SMA_100'] = df['Close'].rolling(window=100).mean()
-        df['SMA_200'] = df['Close'].rolling(window=200).mean()
-        df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
-        df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
-        df['EMA_10'] = df['Close'].ewm(span=10, adjust=False).mean()
-        df['EMA_5'] = df['Close'].ewm(span=5, adjust=False).mean()
-        
-        return df.iloc[-1], df.iloc[-2]
+        if res.get('status') and res.get('data'):
+            # Convert Angel One data format to matching Pandas DataFrame
+            columns = ['Timestamp', 'Open', 'High', 'Low', 'Close', 'Volume']
+            df = pd.DataFrame(res['data'], columns=columns)
+            
+            df['SMA_100'] = df['Close'].rolling(window=100).mean()
+            df['SMA_200'] = df['Close'].rolling(window=200).mean()
+            df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
+            df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
+            df['EMA_10'] = df['Close'].ewm(span=10, adjust=False).mean()
+            df['EMA_5'] = df['Close'].ewm(span=5, adjust=False).mean()
+            
+            return df.iloc[-1], df.iloc[-2]
+        else:
+            return None, None
     except Exception as e:
         print(f"Error fetching {ticker}: {e}")
         return None, None
@@ -100,9 +168,7 @@ def run_bot():
     open_shorts = data["open_shorts"]
     current_capital = data["capital"]
 
-    # ---------------------------------------------------------
     # 1. MANAGE EXITS & TRAILING STOPS
-    # ---------------------------------------------------------
     for ticker in list(open_longs.keys()):
         curr, prev = fetch_hourly_data(ticker)
         if curr is None: continue
@@ -189,9 +255,7 @@ def run_bot():
             del open_shorts[ticker]
             log_event(data, f"❌ CLOSED SHORT: {ticker} @ ₹{exit_price:.2f} | PnL: ₹{net_pnl:.2f}\nReason: {reason}")
 
-    # ---------------------------------------------------------
     # 2. CHECK NEW ENTRIES
-    # ---------------------------------------------------------
     print("\n🔎 Scanning for New Hourly Signals...")
     for ticker in WATCHLIST:
         if ticker in open_longs or ticker in open_shorts: continue
