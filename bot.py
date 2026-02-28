@@ -3,7 +3,7 @@ import numpy as np
 import json
 import os
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from SmartApi import SmartConnect
 import pyotp
 
@@ -158,11 +158,38 @@ def fetch_hourly_data(ticker):
     except Exception as e:
         print(f"Error fetching {ticker}: {e}")
         return None, None
-
+    
+def is_market_open():
+    """Checks if the Indian market is currently open (IST)."""
+    # Force IST time (UTC + 5:30)
+    now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    
+    # 1. Check Weekends (5 = Saturday, 6 = Sunday)
+    if now_ist.weekday() >= 5:
+        return False
+        
+    # 2. Check Holidays (Reads from your config.json)
+    today_str = now_ist.strftime('%Y-%m-%d')
+    if today_str in config.get('holidays', []):
+        return False
+        
+    # 3. Check Market Hours (09:15 AM to 03:30 PM)
+    market_start = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+    market_end = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
+    
+    if not (market_start <= now_ist <= market_end):
+        return False
+        
+    return True
 # --- MAIN BOT LOOP ---
 def run_bot():
+    if not is_market_open():
+        print(f"⏸ Market is closed. Bot sleeping... | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        return
+
     print(f"\n🚀 Running HOURLY Bot | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     data = load_portfolio()
+    # ... rest of your code ...
     
     open_longs = data["open_longs"]
     open_shorts = data["open_shorts"]
