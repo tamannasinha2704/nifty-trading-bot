@@ -237,7 +237,7 @@ def run_bot():
         if not is_market_open(script): continue
         curr, prev = fetch_hourly_data(script)
         if curr is None: continue
-        
+        open_longs[script]['current_price'] = round(curr['Close'], 2)
         # Buy Exit Condition: current +DI < previous +DI
         if curr['plusDI_EMA5'] < prev['plusDI_EMA5']:
             pos = open_longs[script]
@@ -264,6 +264,7 @@ def run_bot():
         if not is_market_open(script): continue
         curr, prev = fetch_hourly_data(script)
         if curr is None: continue
+        open_shorts[script]['current_price'] = round(curr['Close'], 2)
         
         # Sell Exit Condition: current -DI < previous -DI
         if curr['minusDI_EMA5'] < prev['minusDI_EMA5']:
