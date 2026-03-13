@@ -3,7 +3,9 @@ import numpy as np
 import json
 import os
 import requests
+import time  # <--- Add this here
 from datetime import datetime, timedelta, timezone
+# ... (rest of imports)
 from SmartApi import SmartConnect
 import pyotp
 import warnings
@@ -265,7 +267,7 @@ def run_bot():
         curr, prev = fetch_hourly_data(script)
         if curr is None: continue
         open_shorts[script]['current_price'] = round(curr['Close'], 2)
-        
+
         # Sell Exit Condition: current -DI < previous -DI
         if curr['minusDI_EMA5'] < prev['minusDI_EMA5']:
             pos = open_shorts[script]
@@ -335,4 +337,18 @@ def run_bot():
     print("💾 DMI Portfolio Updated.")
 
 if __name__ == "__main__":
-    run_bot()
+    while True:
+        run_bot()
+        
+        # --- INSTITUTIONAL TIMING SYNC ---
+        now = datetime.now()
+        
+        # Find the next 15-minute interval (0, 15, 30, or 45)
+        next_minute = ((now.minute // 15) + 1) * 15
+        
+        # Calculate exact next timestamp, adding a 5-second buffer for the API to finalize data
+        next_time = now.replace(minute=0, second=5, microsecond=0) + timedelta(minutes=next_minute)
+        sleep_seconds = (next_time - now).total_seconds()
+        
+        print(f"\n⏳ Syncing to exchange clock... Sleeping for {int(sleep_seconds)} seconds until {next_time.strftime('%H:%M:%S')}")
+        time.sleep(sleep_seconds)
