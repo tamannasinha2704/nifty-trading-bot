@@ -1,0 +1,17 @@
+{
+    "capital": 999700.11235,
+    "open_longs": {},
+    "open_shorts": {
+        "NATGASMINI": {
+            "trading_symbol": "NATGASMINI26MAR26FUT",
+            "entry_date": "2026-03-13 16:28",
+            "entry_price": 304.3,
+            "qty": 657
+        }
+    },
+    "closed_longs": [],
+    "closed_shorts": [],
+    "signals": [
+        "[2026-03-13 16:28:55] \u2705 OPEN SHORT: NATGASMINI (NATGASMINI26MAR26FUT)\nEntry: \u20b9304.30 | Qty: 657"
+    ]
+}
