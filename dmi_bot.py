@@ -285,7 +285,7 @@ def run_bot():
                 "Entry Price": entry_price, "Exit Price": round(exit_price, 2), "Qty": qty, 
                 "PnL": round(net_pnl, 2), "Status": "CLOSED", "Reason": "-DI Decreased"
             })
-            current_capital += (entry_price * qty) + net_pnl
+            current_capital += (exit_price * qty) + net_pnl
             del open_shorts[script]
             log_event(data, f"❌ CLOSED SHORT: {script}\nExit: ₹{exit_price:.2f} | PnL: ₹{net_pnl:.2f}")
 
@@ -315,20 +315,21 @@ def run_bot():
                     "entry_price": round(entry_price, 2), "qty": qty
                 }
                 log_event(data, f"✅ OPEN LONG: {script} ({TOKEN_MAP[script]['trading_symbol']})\nEntry: ₹{entry_price:.2f} | Qty: {qty}")
-                
+        # --- 1. Fix the Short Entry (Around line 206) ---
         elif sell_cond:
             entry_price = curr['Close']
             qty = int(TRADE_CAPITAL // entry_price)
             margin_req = qty * entry_price
-            
+    
             if qty > 0 and current_capital >= margin_req:
-                current_capital -= (margin_req * BROKERAGE_RATE)
+                # FIX: Subtract the full margin_req from capital, not just brokerage!
+                current_capital -= (margin_req + (margin_req * BROKERAGE_RATE)) 
                 open_shorts[script] = {
-                    "trading_symbol": TOKEN_MAP[script]['trading_symbol'],
-                    "entry_date": datetime.now().strftime('%Y-%m-%d %H:%M'),
-                    "entry_price": round(entry_price, 2), "qty": qty
-                }
-                log_event(data, f"✅ OPEN SHORT: {script} ({TOKEN_MAP[script]['trading_symbol']})\nEntry: ₹{entry_price:.2f} | Qty: {qty}")
+                "trading_symbol": TOKEN_MAP[script]['trading_symbol'],
+                "entry_date": datetime.now().strftime('%Y-%m-%d %H:%M'),
+                "entry_price": round(entry_price, 2), "qty": qty
+        }
+        log_event(data, f"✅ OPEN SHORT: {script}...\nEntry: ₹{entry_price:.2f} | Qty: {qty}")
 
     data["open_longs"] = open_longs
     data["open_shorts"] = open_shorts
